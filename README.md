@@ -1,12 +1,82 @@
-# React + Vite
+Team Sync
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+A team management web app where employees can sign up, log in, and (as admins) manage employee records. Built with React, Redux Toolkit, and a lightweight Node.js API.
 
-Currently, two official plugins are available:
+Features
+Employee registration and login with cookie-based sessions
+Persistent login via /auth/me
+Role-based access (admin / employee)
+Admin employee management: list, search, filter, create, update
+Form validation with React Hook Form
+Dark, responsive UI built with Tailwind CSS
+Tech Stack
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+Frontend: React, Vite, Redux Toolkit, React Router, React Hook Form, Axios, Tailwind CSS, Lucide React Backend: Node.js (built-in http module, in-memory data store)
 
-## Expanding the ESLint configuration
+Project Structure
+reBuild_team-sync/
+├── server.js                # Mock API (Node.js)
+├── vite.config.js           # Vite config + /api proxy
+├── src/
+│   ├── config/
+│   │   └── axiosInstance.js # Axios instance (baseURL: /api)
+│   ├── features/
+│   │   └── auth/
+│   │       ├── hooks/       # useAuth hook
+│   │       ├── pages/       # Login, Register
+│   │       └── state/       # authActions, authSlice
+│   ├── App.jsx
+│   └── main.jsx
+└── package.json
+Getting Started
+Prerequisites
+Node.js 18 or newer
+npm
+Installation
+bash
+git clone https://github.com/<your-username>/<your-repo>.git
+cd <your-repo>
+npm install
+Run the app
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+Start the backend and the frontend in two separate terminals.
+
+bash
+# Terminal 1: API on http://localhost:3000
+node server.js
+
+# Terminal 2: frontend on http://localhost:5173
+npm run dev
+
+The Vite dev server proxies every /api request to http://localhost:3000.
+
+Demo accounts
+Role	Email	Password
+Admin	admin@teamsync.local	password123
+Employee	aarav@teamsync.local	password123
+
+Data is stored in memory, so it resets every time the server restarts.
+
+API Endpoints
+Method	Endpoint	Access	Description
+GET	/api/health	Public	Health check
+POST	/api/auth/register	Public	Create an account
+POST	/api/auth/login	Public	Log in
+GET	/api/auth/me	User	Current logged-in user
+POST	/api/auth/logout	User	Log out
+GET	/api/employee	Admin	List employees (filters)
+POST	/api/employee/create	Admin	Create an employee
+PATCH	/api/employee/update/:id	Admin	Update an employee
+Scripts
+Command	Description
+npm run dev	Start the Vite dev server
+npm run build	Build for production
+npm run preview	Preview the production build
+Contributing
+Create a branch: git checkout -b feature/your-feature
+Commit your changes: git commit -m "feat: add your feature"
+Push the branch: git push -u origin feature/your-feature
+Open a Pull Request
+License
+
+MIT
