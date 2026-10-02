@@ -69,11 +69,7 @@ export let adminNavigation = [
     title: "Employee",
     icon: <PersonStanding />,
   },
-  {
-    path: "/home/document",
-    title: "Documents",
-    icon: <File />,
-  },
+  
   {
     path: "/home/setting",
     title: "Settings",

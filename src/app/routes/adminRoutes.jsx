@@ -21,8 +21,5 @@ export let adminRoutes = [
     path: "/home/department",
     element: <Department />,
   },
-  {
-    path: "/home/document",
-    element: <Document />,
-  },
+  
 ];
