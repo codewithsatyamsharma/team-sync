@@ -29,14 +29,10 @@ const DEPARTMENT_ALIASES = { developer: "engineering", administrative: "operatio
 /* -------------------------------------------------------------------------- */
 
 /* ---------------------------- Department model ----------------------------
- * {
- *   _id, name, slug, description, color,
- *   headId:    employee _id | null
- *   createdAt, updatedAt
- * }
+ * { _id, name, slug, description, color, headId, createdAt, updatedAt }
  * `slug` is the key that employees and tasks store in their `department`
- * field. It is generated from the name when the department is created and
- * never changes, so renaming a department does not break anything.
+ * field. It is generated from the name on create and never changes, so
+ * renaming a department does not break anything.
  * ------------------------------------------------------------------------- */
 
 const departments = [
@@ -348,6 +344,382 @@ const addActivity = (type, text, target) => {
 };
 
 /* -------------------------------------------------------------------------- */
+/*  ATTENDANCE AND LEAVE                                                      */
+/* -------------------------------------------------------------------------- */
+
+/* ---------------------------- Attendance model ----------------------------
+ * {
+ *   _id, employeeId,
+ *   date:               "YYYY-MM-DD" (server local date). Unique per employee.
+ *   checkIn, checkOut:  ISO strings (checkOut is null while the shift is open)
+ *   breaks:             [{ start, end, duration }]   duration in minutes
+ *   totalBreakMinutes, totalWorkedMinutes
+ *   status:             "present" | "late" | "half_day" | "absent" | "on_leave"
+ *   mode:               "office" | "remote"
+ *   createdAt, updatedAt
+ * }
+ *
+ * `status` is the result of the day. The live position of the shift is the
+ * computed `state` field: not_checked_in | checked_in | on_break | checked_out
+ *
+ * ------------------------------- Leave model ------------------------------
+ * {
+ *   _id, employeeId,
+ *   type:       "paid_time_off" | "sick" | "unpaid" | "other"
+ *   startDate, endDate:  "YYYY-MM-DD"
+ *   days:       working days in the range (weekends and holidays excluded)
+ *   handoverNote,
+ *   status:     "pending" | "approved" | "rejected" | "cancelled"
+ *   approvedBy: employee _id | null
+ *   reviewedAt, createdAt, updatedAt
+ * }
+ * ------------------------------------------------------------------------- */
+
+const ATTENDANCE_STATUSES = ["absent", "present", "late", "half_day", "on_leave"];
+const ATTENDANCE_MODES = ["office", "remote"];
+const LEAVE_TYPES = ["paid_time_off", "sick", "unpaid", "other"];
+const LEAVE_STATUSES = ["pending", "approved", "rejected", "cancelled"];
+const PTO_ANNUAL_ALLOWANCE = 20;
+
+// Attendance rules live on the server, never in React.
+const ATTENDANCE_CONFIG = {
+  workStartTime: "09:00",
+  workEndTime: "18:00",
+  lateAfterMinutes: 15,        // checking in later than 09:15 counts as late
+  minimumBreakMinutes: 30,
+  expectedDailyMinutes: 480,   // 8 hours
+  halfDayMinutes: 240,         // working fewer minutes than this counts as a half day
+};
+
+// Company holidays (edit this list each year)
+const holidays = [
+  { date: "2026-01-01", name: "New Year's Day" },
+  { date: "2026-01-19", name: "Martin Luther King Jr. Day" },
+  { date: "2026-05-25", name: "Memorial Day" },
+  { date: "2026-07-03", name: "Independence Day (Observed)" },
+  { date: "2026-09-07", name: "Labor Day" },
+  { date: "2026-11-26", name: "Thanksgiving Day" },
+  { date: "2026-12-25", name: "Christmas Day" },
+].map((holiday) => ({ ...holiday, description: "Official Company Holiday", paid: true }));
+
+const leaves = [];
+const attendanceRecords = [];
+
+/* ------------------------------ Date helpers ------------------------------ */
+// Attendance uses the server's local date and time. Run the server in the
+// timezone of your office so "09:00" means 09:00 there.
+
+const pad = (n) => String(n).padStart(2, "0");
+const localDate = (d = new Date()) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+const parseLocalDate = (str) => {
+  const [y, m, d] = str.split("-").map(Number);
+  return new Date(y, m - 1, d);
+};
+const isValidDateString = (str) =>
+  typeof str === "string" && /^\d{4}-\d{2}-\d{2}$/.test(str) && localDate(parseLocalDate(str)) === str;
+const isValidMonth = (str) => typeof str === "string" && /^\d{4}-(0[1-9]|1[0-2])$/.test(str);
+const currentMonth = () => localDate().slice(0, 7);
+const monthDates = (month) => {
+  const [y, m] = month.split("-").map(Number);
+  const total = new Date(y, m, 0).getDate();
+  return Array.from({ length: total }, (_, i) => `${month}-${pad(i + 1)}`);
+};
+const toMinutes = (hhmm) => {
+  const [h, m] = hhmm.split(":").map(Number);
+  return h * 60 + m;
+};
+const localMinutesOfDay = (d) => d.getHours() * 60 + d.getMinutes();
+const timeLabel = (iso) => {
+  if (!iso) return null;
+  const d = new Date(iso);
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+};
+const timeAt = (dateStr, minuteOfDay) => {
+  const d = parseLocalDate(dateStr);
+  d.setHours(Math.floor(minuteOfDay / 60), minuteOfDay % 60, 0, 0);
+  return d.toISOString();
+};
+const minutesBetween = (a, b) => Math.max(0, Math.round((new Date(b) - new Date(a)) / 60000));
+const round1 = (n) => Math.round(n * 10) / 10;
+const round2 = (n) => Math.round(n * 100) / 100;
+
+const isWeekend = (dateStr) => [0, 6].includes(parseLocalDate(dateStr).getDay());
+const holidayOn = (dateStr) => holidays.find((holiday) => holiday.date === dateStr) || null;
+const isWorkingDay = (dateStr) => !isWeekend(dateStr) && !holidayOn(dateStr);
+
+const countWorkingDays = (startDate, endDate) => {
+  let count = 0;
+  const cursor = parseLocalDate(startDate);
+  const end = parseLocalDate(endDate);
+  while (cursor <= end) {
+    if (isWorkingDay(localDate(cursor))) count += 1;
+    cursor.setDate(cursor.getDate() + 1);
+  }
+  return count;
+};
+
+// True when the employee has an approved leave covering this working day
+const onApprovedLeave = (employeeId, dateStr) =>
+  isWorkingDay(dateStr) &&
+  leaves.some(
+    (leave) =>
+      leave.employeeId === employeeId &&
+      leave.status === "approved" &&
+      leave.startDate <= dateStr &&
+      dateStr <= leave.endDate,
+  );
+
+/* --------------------------- Attendance calculators ----------------------- */
+
+const findAttendance = (employeeId, date) =>
+  attendanceRecords.find((record) => record.employeeId === employeeId && record.date === date);
+
+const activeBreak = (record) => record.breaks.find((b) => !b.end);
+
+// Open shifts stop counting at midnight so a forgotten clock-out cannot grow forever
+const effectiveEnd = (record, at) => {
+  if (record.checkOut) return new Date(record.checkOut);
+  if (localDate(at) === record.date) return at;
+  return new Date(timeAt(record.date, 23 * 60 + 59));
+};
+
+const breakMinutesOf = (record, at = new Date()) => {
+  const end = effectiveEnd(record, at);
+  return record.breaks.reduce(
+    (sum, b) => sum + (b.end ? b.duration : minutesBetween(b.start, end)),
+    0,
+  );
+};
+
+const workedMinutesOf = (record, at = new Date()) => {
+  const end = effectiveEnd(record, at);
+  return Math.max(0, minutesBetween(record.checkIn, end) - breakMinutesOf(record, at));
+};
+
+const stateOf = (record) => {
+  if (!record) return "not_checked_in";
+  if (record.checkOut) return "checked_out";
+  return activeBreak(record) ? "on_break" : "checked_in";
+};
+
+const serializeAttendance = (record, at = new Date()) => {
+  const open = !record.checkOut;
+  const currentBreak = open ? activeBreak(record) : null;
+  return {
+    ...record,
+    breaks: record.breaks.map((b) => ({ ...b })),
+    state: stateOf(record),
+    isOnBreak: Boolean(currentBreak),
+    currentBreakStart: currentBreak ? currentBreak.start : null,
+    isShiftActive: open,
+    totalBreakMinutes: breakMinutesOf(record, at),
+    totalWorkedMinutes: workedMinutesOf(record, at),
+  };
+};
+
+const emptyToday = (employeeId, date) => ({
+  _id: null,
+  employeeId,
+  date,
+  checkIn: null,
+  checkOut: null,
+  breaks: [],
+  status: null,
+  mode: null,
+  state: "not_checked_in",
+  isOnBreak: false,
+  currentBreakStart: null,
+  isShiftActive: false,
+  totalBreakMinutes: 0,
+  totalWorkedMinutes: 0,
+});
+
+// One row of the attendance history table
+const historyRow = (record, at = new Date()) => {
+  const worked = workedMinutesOf(record, at);
+  return {
+    _id: record._id,
+    employeeId: record.employeeId,
+    date: record.date,
+    checkIn: record.checkIn,
+    checkOut: record.checkOut,
+    checkInTime: timeLabel(record.checkIn),
+    checkOutTime: timeLabel(record.checkOut),
+    breakMinutes: breakMinutesOf(record, at),
+    totalMinutes: worked,
+    totalHours: round2(worked / 60),
+    mode: record.mode,
+    status: record.status,
+  };
+};
+
+/* ------------------------------ Leave helpers ----------------------------- */
+
+const ptoStats = (employeeId, year = new Date().getFullYear()) => {
+  const mine = leaves.filter(
+    (leave) =>
+      leave.employeeId === employeeId &&
+      leave.type === "paid_time_off" &&
+      leave.startDate.startsWith(String(year)),
+  );
+  const sumDays = (status) =>
+    mine.filter((leave) => leave.status === status).reduce((sum, leave) => sum + leave.days, 0);
+  const used = sumDays("approved");
+  const pending = sumDays("pending");
+  return {
+    allowance: PTO_ANNUAL_ALLOWANCE,
+    used,
+    pending,
+    remaining: PTO_ANNUAL_ALLOWANCE - used,
+    available: Math.max(PTO_ANNUAL_ALLOWANCE - used - pending, 0),
+  };
+};
+
+const leaveWithEmployee = (leave) => ({
+  ...leave,
+  employeeName: employees.find((e) => e._id === leave.employeeId)?.name || null,
+  approvedByName: employees.find((e) => e._id === leave.approvedBy)?.name || null,
+});
+
+/* ------------------------ Calendar and summary builders ------------------- */
+
+// One entry per notable day: attended, on leave, holiday, or absent
+const buildCalendar = (employeeId, month) => {
+  const employee = employees.find((e) => e._id === employeeId);
+  const today = localDate();
+  const entries = [];
+  monthDates(month).forEach((date) => {
+    const record = findAttendance(employeeId, date);
+    if (record) {
+      entries.push({ date, status: record.status });
+      return;
+    }
+    if (onApprovedLeave(employeeId, date)) {
+      entries.push({ date, status: "on_leave" });
+      return;
+    }
+    const holiday = holidayOn(date);
+    if (holiday) {
+      entries.push({ date, status: "holiday", name: holiday.name });
+      return;
+    }
+    if (isWeekend(date)) return;
+    if (date < today && date >= employee.joiningDate) entries.push({ date, status: "absent" });
+  });
+  return entries;
+};
+
+const buildSummary = (employee, month) => {
+  const at = new Date();
+  const records = attendanceRecords.filter(
+    (record) => record.employeeId === employee._id && record.date.startsWith(month),
+  );
+  const totalMinutes = records.reduce((sum, record) => sum + workedMinutesOf(record, at), 0);
+  const workedRecords = records.filter((record) => workedMinutesOf(record, at) > 0);
+
+  // Days the employee was expected to work this month
+  const expectedDays = monthDates(month).filter(
+    (date) =>
+      isWorkingDay(date) &&
+      date >= employee.joiningDate &&
+      !onApprovedLeave(employee._id, date),
+  ).length;
+  const targetHours = (expectedDays * ATTENDANCE_CONFIG.expectedDailyMinutes) / 60;
+  const monthlyHours = round1(totalMinutes / 60);
+  const calendar = buildCalendar(employee._id, month);
+  const pto = ptoStats(employee._id, Number(month.slice(0, 4)));
+
+  return {
+    month,
+    monthlyHours,
+    targetHours,
+    targetPercentage: targetHours ? Math.round((monthlyHours / targetHours) * 100) : 0,
+    averageDailyHours: workedRecords.length ? round1(totalMinutes / 60 / workedRecords.length) : 0,
+    punctualityRate: records.length
+      ? round1((records.filter((record) => record.status !== "late").length / records.length) * 100)
+      : 0,
+    daysPresent: records.length,
+    daysLate: records.filter((record) => record.status === "late").length,
+    daysAbsent: calendar.filter((entry) => entry.status === "absent").length,
+    daysOnLeave: calendar.filter((entry) => entry.status === "on_leave").length,
+    ptoBalance: pto.remaining,
+    ptoPending: pto.pending,
+    ptoAllowance: pto.allowance,
+  };
+};
+
+/* ---------------------------------- Seeds --------------------------------- */
+
+const seedLeave = (employeeId, type, startDate, endDate, status, handoverNote = "") => {
+  leaves.push({
+    _id: randomUUID(),
+    employeeId,
+    type,
+    startDate,
+    endDate,
+    days: countWorkingDays(startDate, endDate),
+    handoverNote,
+    status,
+    approvedBy: status === "approved" || status === "rejected" ? "admin-1" : null,
+    reviewedAt: status === "approved" || status === "rejected" ? daysAgo(10) : null,
+    createdAt: daysAgo(14),
+    updatedAt: daysAgo(10),
+  });
+};
+
+seedLeave("admin-1", "paid_time_off", "2026-03-09", "2026-03-13", "approved", "Family trip.");
+seedLeave("admin-1", "paid_time_off", "2026-06-01", "2026-06-01", "approved");
+seedLeave("admin-1", "paid_time_off", "2026-10-26", "2026-10-27", "pending", "Please cover the deployment tasks.");
+seedLeave("employee-1", "sick", "2026-09-14", "2026-09-14", "approved");
+seedLeave("employee-4", "paid_time_off", "2026-08-24", "2026-08-25", "approved");
+seedLeave("employee-3", "paid_time_off", "2026-10-19", "2026-10-21", "pending");
+
+// About 45 days of history per active employee, with a few late, half-day and absent days
+const SEED_HISTORY_DAYS = 45;
+employees
+  .filter((employee) => employee.status === "active")
+  .forEach((employee, employeeIndex) => {
+    for (let back = SEED_HISTORY_DAYS; back >= 1; back -= 1) {
+      const date = localDate(new Date(Date.now() - back * DAY));
+      if (date < employee.joiningDate) continue;
+      if (!isWorkingDay(date) || onApprovedLeave(employee._id, date)) continue;
+
+      const roll = (back * 7 + employeeIndex * 13) % 20;
+      if (roll === 0) continue; // absent: no record
+
+      const kind = roll <= 2 ? "late" : roll === 3 ? "half_day" : "present";
+      const mode = (back + employeeIndex) % 4 === 0 ? "remote" : "office";
+      const inMinute = kind === "late" ? 9 * 60 + 20 + (back % 25) : 8 * 60 + 45 + (back % 20);
+      const outMinute = kind === "half_day" ? 12 * 60 + 30 : 17 * 60 + 45 + ((back * 3) % 45);
+      const breakLength = kind === "half_day" ? 0 : 30 + (back % 2) * 15;
+      const breakStart = 12 * 60 + 30 + (back % 3) * 15;
+
+      const record = {
+        _id: randomUUID(),
+        employeeId: employee._id,
+        date,
+        checkIn: timeAt(date, inMinute),
+        checkOut: timeAt(date, outMinute),
+        breaks: breakLength
+          ? [{
+              start: timeAt(date, breakStart),
+              end: timeAt(date, breakStart + breakLength),
+              duration: breakLength,
+            }]
+          : [],
+        totalBreakMinutes: breakLength,
+        totalWorkedMinutes: 0,
+        status: kind,
+        mode,
+        createdAt: timeAt(date, inMinute),
+        updatedAt: timeAt(date, outMinute),
+      };
+      record.totalWorkedMinutes = workedMinutesOf(record);
+      attendanceRecords.push(record);
+    }
+  });
+
+/* -------------------------------------------------------------------------- */
 /*  HELPERS                                                                   */
 /* -------------------------------------------------------------------------- */
 
@@ -361,6 +733,7 @@ const teamMember = (employee) => ({
   presence: employee.presence,
 });
 
+// Every response carries `success`, plus the `data` / `message` the route sends
 const send = (res, status, body, headers = {}) => {
   res.writeHead(status, {
     "Content-Type": "application/json; charset=utf-8",
@@ -368,7 +741,7 @@ const send = (res, status, body, headers = {}) => {
     "Access-Control-Allow-Credentials": "true",
     ...headers,
   });
-  res.end(JSON.stringify(body));
+  res.end(JSON.stringify({ success: status < 400, ...body }));
 };
 
 const parseCookies = (request) =>
@@ -412,6 +785,21 @@ const requireAdmin = (request, response) => {
     return null;
   }
   return employee;
+};
+
+// Reads ?page and ?limit and returns the slice plus pagination info
+const paginate = (items, searchParams, defaultLimit, maxLimit) => {
+  const page = Math.max(Number(searchParams.get("page")) || 1, 1);
+  const limit = Math.min(Math.max(Number(searchParams.get("limit")) || defaultLimit, 1), maxLimit);
+  return {
+    items: items.slice((page - 1) * limit, page * limit),
+    pagination: {
+      page,
+      limit,
+      total: items.length,
+      totalPages: Math.max(Math.ceil(items.length / limit), 1),
+    },
+  };
 };
 
 /* ----------------------------- Department helpers ------------------------- */
@@ -459,7 +847,6 @@ const withStats = (department) => {
   };
 };
 
-// Validates the fields that may appear in a create or update body.
 // Returns [statusCode, message] on failure, or null when everything is valid.
 const validateDepartmentBody = (body, currentId = null) => {
   if (body.name !== undefined) {
@@ -497,7 +884,6 @@ const withNames = (task) => ({
   projectName: projects.find((p) => p._id === task.projectId)?.name || null,
 });
 
-// Validates the fields that may appear in a create or update body.
 // Returns [statusCode, message] on failure, or null when everything is valid.
 const validateTaskBody = (body) => {
   if (body.status !== undefined && !TASK_STATUSES.includes(body.status)) {
@@ -677,7 +1063,7 @@ const server = createServer(async (request, response) => {
         presence: "Available",
         bio: "",
         avatar: "",
-        joiningDate: now().slice(0, 10),
+        joiningDate: localDate(),
         createdAt: now(),
       };
       employees.push(employee);
@@ -758,7 +1144,7 @@ const server = createServer(async (request, response) => {
         presence: "Available",
         bio: body.bio || "",
         avatar: body.avatar || "",
-        joiningDate: body.joiningDate || now().slice(0, 10),
+        joiningDate: body.joiningDate || localDate(),
         createdAt: now(),
       };
       employees.push(employee);
@@ -817,27 +1203,14 @@ const server = createServer(async (request, response) => {
     if (request.method === "GET" && pathname === "/api/departments") {
       if (!requireUser(request, response)) return;
       const search = (searchParams.get("search") || "").trim().toLowerCase();
-      const page = Math.max(Number(searchParams.get("page")) || 1, 1);
-      const limit = Math.min(Math.max(Number(searchParams.get("limit")) || 100, 1), 200);
-
       const filtered = departments
         .filter((department) =>
           !search ||
           department.name.toLowerCase().includes(search) ||
           department.description.toLowerCase().includes(search))
         .sort((a, b) => a.name.localeCompare(b.name));
-
-      send(response, 200, {
-        data: {
-          departments: filtered.slice((page - 1) * limit, page * limit).map(withStats),
-          pagination: {
-            page,
-            limit,
-            total: filtered.length,
-            totalPages: Math.max(Math.ceil(filtered.length / limit), 1),
-          },
-        },
-      });
+      const { items, pagination } = paginate(filtered, searchParams, 100, 200);
+      send(response, 200, { data: { departments: items.map(withStats), pagination } });
       return;
     }
 
@@ -946,6 +1319,462 @@ const server = createServer(async (request, response) => {
       return;
     }
 
+    /* ------------------------------ Attendance ---------------------------- */
+    // Today's state for the signed-in employee (drives the clock-in card)
+    if (request.method === "GET" && pathname === "/api/attendance/today") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const date = localDate();
+      const record = findAttendance(user._id, date);
+      send(response, 200, {
+        data: {
+          ...(record ? serializeAttendance(record) : emptyToday(user._id, date)),
+          onLeave: onApprovedLeave(user._id, date),
+          holiday: holidayOn(date)?.name || null,
+          config: ATTENDANCE_CONFIG,
+        },
+      });
+      return;
+    }
+
+    // History table: ?month=2026-05&status=late&mode=remote&page=1&limit=6
+    if (request.method === "GET" && pathname === "/api/attendance") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const month = searchParams.get("month");
+      const status = searchParams.get("status");
+      const mode = searchParams.get("mode");
+      if (month && !isValidMonth(month)) {
+        send(response, 400, { message: "Month must look like 2026-05." });
+        return;
+      }
+      if (status && !ATTENDANCE_STATUSES.includes(status)) {
+        send(response, 400, { message: `Status must be one of: ${ATTENDANCE_STATUSES.join(", ")}.` });
+        return;
+      }
+      if (mode && !ATTENDANCE_MODES.includes(mode)) {
+        send(response, 400, { message: `Mode must be one of: ${ATTENDANCE_MODES.join(", ")}.` });
+        return;
+      }
+
+      const at = new Date();
+      const filtered = attendanceRecords
+        .filter((record) =>
+          record.employeeId === user._id &&
+          (!month || record.date.startsWith(month)) &&
+          (!status || record.status === status) &&
+          (!mode || record.mode === mode))
+        .sort((a, b) => b.date.localeCompare(a.date));
+      const { items, pagination } = paginate(filtered, searchParams, 10, 100);
+      send(response, 200, { data: { records: items.map((record) => historyRow(record, at)), pagination } });
+      return;
+    }
+
+    // Monthly summary cards
+    if (request.method === "GET" && pathname === "/api/attendance/summary") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const month = searchParams.get("month") || currentMonth();
+      if (!isValidMonth(month)) {
+        send(response, 400, { message: "Month must look like 2026-05." });
+        return;
+      }
+      send(response, 200, { data: buildSummary(user, month) });
+      return;
+    }
+
+    // Calendar dots
+    if (request.method === "GET" && pathname === "/api/attendance/calendar") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const month = searchParams.get("month") || currentMonth();
+      if (!isValidMonth(month)) {
+        send(response, 400, { message: "Month must look like 2026-05." });
+        return;
+      }
+      send(response, 200, { data: buildCalendar(user._id, month) });
+      return;
+    }
+
+    // Clock in. The employee and the time always come from the server.
+    if (request.method === "POST" && pathname === "/api/attendance/check-in") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const body = await readBody(request);
+      const mode = body.mode ?? "office";
+      if (!ATTENDANCE_MODES.includes(mode)) {
+        send(response, 400, { message: `Mode must be one of: ${ATTENDANCE_MODES.join(", ")}.` });
+        return;
+      }
+
+      const t = new Date();
+      const date = localDate(t);
+      if (findAttendance(user._id, date)) {
+        send(response, 409, { message: "You have already checked in today." });
+        return;
+      }
+      if (onApprovedLeave(user._id, date)) {
+        send(response, 409, { message: "You are on approved leave today." });
+        return;
+      }
+
+      const minutesAfterStart = localMinutesOfDay(t) - toMinutes(ATTENDANCE_CONFIG.workStartTime);
+      const record = {
+        _id: randomUUID(),
+        employeeId: user._id,
+        date,
+        checkIn: t.toISOString(),
+        checkOut: null,
+        breaks: [],
+        totalBreakMinutes: 0,
+        totalWorkedMinutes: 0,
+        status: minutesAfterStart > ATTENDANCE_CONFIG.lateAfterMinutes ? "late" : "present",
+        mode,
+        createdAt: t.toISOString(),
+        updatedAt: t.toISOString(),
+      };
+      attendanceRecords.push(record);
+      send(response, 201, { message: "Checked in successfully.", data: serializeAttendance(record, t) });
+      return;
+    }
+
+    // Clock out
+    if (request.method === "POST" && pathname === "/api/attendance/check-out") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const t = new Date();
+      const record = findAttendance(user._id, localDate(t));
+      if (!record) {
+        send(response, 409, { message: "You have not checked in today." });
+        return;
+      }
+      if (record.checkOut) {
+        send(response, 409, { message: "You have already checked out today." });
+        return;
+      }
+
+      // End any running break first
+      const running = activeBreak(record);
+      if (running) {
+        running.end = t.toISOString();
+        running.duration = minutesBetween(running.start, running.end);
+      }
+
+      record.checkOut = t.toISOString();
+      record.totalBreakMinutes = breakMinutesOf(record, t);
+      record.totalWorkedMinutes = workedMinutesOf(record, t);
+      if (record.totalWorkedMinutes < ATTENDANCE_CONFIG.halfDayMinutes) record.status = "half_day";
+      record.updatedAt = t.toISOString();
+
+      send(response, 200, { message: "Checked out successfully.", data: serializeAttendance(record, t) });
+      return;
+    }
+
+    // Start a break
+    if (request.method === "POST" && pathname === "/api/attendance/break/start") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const t = new Date();
+      const record = findAttendance(user._id, localDate(t));
+      if (!record) {
+        send(response, 409, { message: "You have not checked in today." });
+        return;
+      }
+      if (record.checkOut) {
+        send(response, 409, { message: "Your shift has already ended." });
+        return;
+      }
+      if (activeBreak(record)) {
+        send(response, 409, { message: "You are already on a break." });
+        return;
+      }
+      record.breaks.push({ start: t.toISOString(), end: null, duration: 0 });
+      record.updatedAt = t.toISOString();
+      send(response, 200, { message: "Break started.", data: serializeAttendance(record, t) });
+      return;
+    }
+
+    // End a break
+    if (request.method === "POST" && pathname === "/api/attendance/break/end") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const t = new Date();
+      const record = findAttendance(user._id, localDate(t));
+      const running = record && !record.checkOut ? activeBreak(record) : null;
+      if (!running) {
+        send(response, 409, { message: "You are not on a break." });
+        return;
+      }
+      running.end = t.toISOString();
+      running.duration = minutesBetween(running.start, running.end);
+      record.totalBreakMinutes = breakMinutesOf(record, t);
+      record.totalWorkedMinutes = workedMinutesOf(record, t);
+      record.updatedAt = t.toISOString();
+      send(response, 200, { message: "Break ended.", data: serializeAttendance(record, t) });
+      return;
+    }
+
+    /* ------------------------ Attendance (admin only) --------------------- */
+    // All employees: ?employeeId&department&status&mode&date&startDate&endDate&page&limit
+    if (request.method === "GET" && pathname === "/api/admin/attendance") {
+      if (!requireAdmin(request, response)) return;
+      const employeeId = searchParams.get("employeeId");
+      const department = normalizeDepartment(searchParams.get("department") || "");
+      const status = searchParams.get("status");
+      const mode = searchParams.get("mode");
+      const date = searchParams.get("date");
+      const startDate = searchParams.get("startDate");
+      const endDate = searchParams.get("endDate");
+
+      for (const [label, value] of [["date", date], ["startDate", startDate], ["endDate", endDate]]) {
+        if (value && !isValidDateString(value)) {
+          send(response, 400, { message: `${label} must look like 2026-05-26.` });
+          return;
+        }
+      }
+      if (status && !ATTENDANCE_STATUSES.includes(status)) {
+        send(response, 400, { message: `Status must be one of: ${ATTENDANCE_STATUSES.join(", ")}.` });
+        return;
+      }
+      if (mode && !ATTENDANCE_MODES.includes(mode)) {
+        send(response, 400, { message: `Mode must be one of: ${ATTENDANCE_MODES.join(", ")}.` });
+        return;
+      }
+
+      const at = new Date();
+      const rows = attendanceRecords
+        .map((record) => ({ record, employee: employees.find((e) => e._id === record.employeeId) }))
+        .filter(({ record, employee }) =>
+          employee &&
+          (!employeeId || record.employeeId === employeeId) &&
+          (!department || employee.department === department) &&
+          (!status || record.status === status) &&
+          (!mode || record.mode === mode) &&
+          (!date || record.date === date) &&
+          (!startDate || record.date >= startDate) &&
+          (!endDate || record.date <= endDate))
+        .sort((a, b) => b.record.date.localeCompare(a.record.date) || a.employee.name.localeCompare(b.employee.name));
+      const { items, pagination } = paginate(rows, searchParams, 20, 100);
+
+      send(response, 200, {
+        data: {
+          records: items.map(({ record, employee }) => ({
+            ...historyRow(record, at),
+            employee: {
+              _id: employee._id,
+              name: employee.name,
+              avatar: employee.avatar,
+              department: employee.department,
+            },
+          })),
+          pagination,
+        },
+      });
+      return;
+    }
+
+    // Company-wide numbers for one day (defaults to today)
+    if (request.method === "GET" && pathname === "/api/admin/attendance/summary") {
+      if (!requireAdmin(request, response)) return;
+      const date = searchParams.get("date") || localDate();
+      if (!isValidDateString(date)) {
+        send(response, 400, { message: "date must look like 2026-05-26." });
+        return;
+      }
+      const active = employees.filter((e) => e.status === "active" && e.joiningDate <= date);
+      const records = active
+        .map((e) => findAttendance(e._id, date))
+        .filter(Boolean);
+      const onLeave = active.filter(
+        (e) => !findAttendance(e._id, date) && onApprovedLeave(e._id, date),
+      ).length;
+      const working = isWorkingDay(date);
+
+      send(response, 200, {
+        data: {
+          date,
+          isWorkingDay: working,
+          totalEmployees: active.length,
+          presentToday: records.length,
+          lateToday: records.filter((r) => r.status === "late").length,
+          remoteToday: records.filter((r) => r.mode === "remote").length,
+          onLeaveToday: onLeave,
+          absentToday: working ? active.length - records.length - onLeave : 0,
+        },
+      });
+      return;
+    }
+
+    /* -------------------------------- Leave ------------------------------- */
+    // The signed-in employee's requests, upcoming holidays and PTO balance
+    if (request.method === "GET" && pathname === "/api/leaves/my") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const status = searchParams.get("status");
+      if (status && !LEAVE_STATUSES.includes(status)) {
+        send(response, 400, { message: `Status must be one of: ${LEAVE_STATUSES.join(", ")}.` });
+        return;
+      }
+      const today = localDate();
+      send(response, 200, {
+        data: {
+          leaves: leaves
+            .filter((leave) => leave.employeeId === user._id && (!status || leave.status === status))
+            .sort((a, b) => b.startDate.localeCompare(a.startDate))
+            .map(leaveWithEmployee),
+          upcomingHolidays: holidays.filter((holiday) => holiday.date >= today).slice(0, 5),
+          pto: ptoStats(user._id),
+        },
+      });
+      return;
+    }
+
+    // Request leave
+    if (request.method === "POST" && pathname === "/api/leaves") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const body = await readBody(request);
+
+      if (!LEAVE_TYPES.includes(body.type)) {
+        send(response, 400, { message: `Type must be one of: ${LEAVE_TYPES.join(", ")}.` });
+        return;
+      }
+      const startDate = body.startDate;
+      const endDate = body.endDate || body.startDate;
+      if (!isValidDateString(startDate) || !isValidDateString(endDate)) {
+        send(response, 400, { message: "Start and end dates must look like 2026-06-01." });
+        return;
+      }
+      if (endDate < startDate) {
+        send(response, 400, { message: "End date cannot be before the start date." });
+        return;
+      }
+      if (startDate < localDate() && body.type !== "sick") {
+        send(response, 400, { message: "Start date cannot be in the past." });
+        return;
+      }
+      if (body.handoverNote !== undefined && String(body.handoverNote).length > 1000) {
+        send(response, 400, { message: "Handover note must be 1000 characters or fewer." });
+        return;
+      }
+
+      const days = countWorkingDays(startDate, endDate);
+      if (days === 0) {
+        send(response, 400, { message: "The selected dates contain no working days." });
+        return;
+      }
+      const overlaps = leaves.some(
+        (leave) =>
+          leave.employeeId === user._id &&
+          ["pending", "approved"].includes(leave.status) &&
+          leave.startDate <= endDate &&
+          startDate <= leave.endDate,
+      );
+      if (overlaps) {
+        send(response, 409, { message: "You already have a leave request for these dates." });
+        return;
+      }
+      if (body.type === "paid_time_off") {
+        const { available } = ptoStats(user._id, Number(startDate.slice(0, 4)));
+        if (days > available) {
+          send(response, 400, {
+            message: `Not enough PTO balance. You have ${available} ${available === 1 ? "day" : "days"} available.`,
+          });
+          return;
+        }
+      }
+
+      const leave = {
+        _id: randomUUID(),
+        employeeId: user._id,
+        type: body.type,
+        startDate,
+        endDate,
+        days,
+        handoverNote: body.handoverNote ? String(body.handoverNote).trim() : "",
+        status: "pending",
+        approvedBy: null,
+        reviewedAt: null,
+        createdAt: now(),
+        updatedAt: now(),
+      };
+      leaves.push(leave);
+      send(response, 201, { message: "Leave request submitted.", data: leaveWithEmployee(leave) });
+      return;
+    }
+
+    // All leave requests: admin only
+    if (request.method === "GET" && pathname === "/api/leaves") {
+      if (!requireAdmin(request, response)) return;
+      const status = searchParams.get("status");
+      const employeeId = searchParams.get("employeeId");
+      if (status && !LEAVE_STATUSES.includes(status)) {
+        send(response, 400, { message: `Status must be one of: ${LEAVE_STATUSES.join(", ")}.` });
+        return;
+      }
+      const filtered = leaves
+        .filter((leave) => (!status || leave.status === status) && (!employeeId || leave.employeeId === employeeId))
+        .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+      const { items, pagination } = paginate(filtered, searchParams, 20, 100);
+      send(response, 200, { data: { leaves: items.map(leaveWithEmployee), pagination } });
+      return;
+    }
+
+    const leaveActionMatch = pathname.match(/^\/api\/leaves\/([^/]+)\/(cancel|review)$/);
+
+    // Cancel your own request
+    if (leaveActionMatch && leaveActionMatch[2] === "cancel" && request.method === "PATCH") {
+      const user = requireUser(request, response);
+      if (!user) return;
+      const leave = leaves.find((item) => item._id === leaveActionMatch[1]);
+      if (!leave) {
+        send(response, 404, { message: "Leave request not found." });
+        return;
+      }
+      if (leave.employeeId !== user._id) {
+        send(response, 403, { message: "You can only cancel your own leave requests." });
+        return;
+      }
+      const cancellable =
+        leave.status === "pending" || (leave.status === "approved" && leave.startDate > localDate());
+      if (!cancellable) {
+        send(response, 409, { message: "This leave request can no longer be cancelled." });
+        return;
+      }
+      leave.status = "cancelled";
+      leave.updatedAt = now();
+      send(response, 200, { message: "Leave request cancelled.", data: leaveWithEmployee(leave) });
+      return;
+    }
+
+    // Approve or reject: admin only. Body: { "status": "approved" | "rejected" }
+    if (leaveActionMatch && leaveActionMatch[2] === "review" && request.method === "PATCH") {
+      const admin = requireAdmin(request, response);
+      if (!admin) return;
+      const leave = leaves.find((item) => item._id === leaveActionMatch[1]);
+      if (!leave) {
+        send(response, 404, { message: "Leave request not found." });
+        return;
+      }
+      const { status } = await readBody(request);
+      if (!["approved", "rejected"].includes(status)) {
+        send(response, 400, { message: "Status must be approved or rejected." });
+        return;
+      }
+      if (leave.status !== "pending") {
+        send(response, 409, { message: "Only pending requests can be reviewed." });
+        return;
+      }
+      leave.status = status;
+      leave.approvedBy = admin._id;
+      leave.reviewedAt = now();
+      leave.updatedAt = now();
+      const owner = employees.find((e) => e._id === leave.employeeId);
+      addActivity("update", `${admin.name.split(" ")[0]} ${status} leave for`, owner?.name || "an employee");
+      send(response, 200, { message: `Leave request ${status}.`, data: leaveWithEmployee(leave) });
+      return;
+    }
+
     /* ------------------------------- Projects ----------------------------- */
     if (request.method === "GET" && pathname === "/api/projects") {
       if (!requireUser(request, response)) return;
@@ -964,8 +1793,6 @@ const server = createServer(async (request, response) => {
       const projectId = searchParams.get("projectId");
       const assigneeId = searchParams.get("assigneeId");
       const search = (searchParams.get("search") || "").toLowerCase();
-      const page = Math.max(Number(searchParams.get("page")) || 1, 1);
-      const limit = Math.min(Math.max(Number(searchParams.get("limit")) || 100, 1), 200);
 
       const filtered = tasks
         .filter((task) =>
@@ -976,18 +1803,8 @@ const server = createServer(async (request, response) => {
           (!assigneeId || task.assigneeIds.includes(assigneeId)) &&
           (!search || task.title.toLowerCase().includes(search)))
         .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-
-      send(response, 200, {
-        data: {
-          tasks: filtered.slice((page - 1) * limit, page * limit).map(withNames),
-          pagination: {
-            page,
-            limit,
-            total: filtered.length,
-            totalPages: Math.max(Math.ceil(filtered.length / limit), 1),
-          },
-        },
-      });
+      const { items, pagination } = paginate(filtered, searchParams, 100, 200);
+      send(response, 200, { data: { tasks: items.map(withNames), pagination } });
       return;
     }
 
