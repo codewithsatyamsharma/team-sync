@@ -1,65 +1,80 @@
-# Deployment and launch guide
+# Free deployment guide (MongoDB + Render)
 
-This guide deploys the Vite frontend and Node API together as one web service. A single origin keeps the HTTP-only session cookie and API requests straightforward. Because the project stores accounts, sessions, and messages in a JSON file, the service needs persistent disk storage.
+Team Sync is a Vite frontend served by its Node.js API in one web service. The API stores employees, messages, tasks, attendance, departments, documents, and sessions in MongoDB. There is no PostgreSQL dependency. The repository includes [`render.yaml`](./render.yaml) for a Render Blueprint.
 
-The repository includes [`render.yaml`](./render.yaml) for a Render Blueprint deployment. In Render, choose **New → Blueprint**, connect this GitHub repository, review the service and persistent disk plan (Render requires a paid service plan for persistent disks), and enter unique values for `DEMO_ADMIN_PASSWORD` and `DEMO_EMPLOYEE_PASSWORD` when prompted. Once the first deploy is healthy, use its `onrender.com` URL as the live link.
+## What you need
 
-## Before deployment
+- A GitHub repository containing this project.
+- A free MongoDB Atlas account and free cluster. Create a database user with a strong unique password and grant it access only to the `team_sync` database.
+- A free Render account.
 
-1. Replace the demo credentials. `DEMO_ADMIN_PASSWORD` and `DEMO_EMPLOYEE_PASSWORD` only apply when the data file is first created and the seeded accounts do not already have password hashes.
-2. Review the contents of `data/team-sync.json` before publishing. `.gitignore` excludes the runtime data directory; never commit real employee data or secrets.
-3. Run the local build and check the auth and chat flows (see the verification section below).
-4. Push the source repository to GitHub. Keep `node_modules`, `dist`, runtime data, and local environment files out of Git.
+Atlas free clusters are intended for small development/demo workloads and have storage and feature limits. Check the current [Atlas free/shared cluster limits](https://www.mongodb.com/docs/atlas/reference/free-shared-limitations/) before using this for real company data.
 
-## Render deployment (recommended for this file-backed version)
+## 1. Create MongoDB Atlas database
 
-1. Create a **Web Service** in Render and connect the GitHub repository.
-2. Choose the Node runtime.
-3. Set **Build Command** to `npm ci && npm run build`.
-4. Set **Start Command** to `npm start`.
-5. Add a persistent disk mounted at `/var/data`. A persistent disk may require a paid Render plan; if persistent disks are unavailable in your plan or region, use a managed database version of the app instead. Deploying this JSON-backed version on an ephemeral filesystem loses user data on restart/redeploy.
-6. Add environment variables:
-   - `NODE_ENV=production`
-   - `SERVE_STATIC=true`
-   - `DATA_FILE=/var/data/team-sync.json`
-   - `DEMO_ADMIN_PASSWORD=<long unique password>`
-   - `DEMO_EMPLOYEE_PASSWORD=<long unique password>`
-7. Deploy. Render supplies `PORT`; the server listens on it and serves both UI and API.
-8. Open the generated `https://<service>.onrender.com` URL. The server's production cookie includes `Secure`, so use HTTPS.
-9. Verify `https://<service>.onrender.com/api/health` returns `{"status":"ok",...}`.
-10. Sign in with the configured admin and employee seed accounts, then send a message between them in separate browsers or private windows. Confirm it appears on the other side.
+1. Create a free cluster in [MongoDB Atlas](https://www.mongodb.com/atlas/database).
+2. Under **Database Access**, create an application database user. Do not use your Atlas account password; store the new password securely.
+3. Under **Network Access**, add the network access rule required by your app host. Render free instances do not have fixed outbound IP addresses, so a demo deployment often needs `0.0.0.0/0`. This allows any IP to reach the database endpoint; reduce exposure with a unique long password and a database user limited to this app's database, and never reuse the credential elsewhere.
+4. From **Connect → Drivers**, copy the connection URI. Replace the password placeholder with the URL-encoded database-user password and put `/team_sync` before the query string. It should look like `mongodb+srv://<user>:<password>@<cluster-host>/team_sync?retryWrites=true&w=majority`.
+5. Keep this URI private. Do not commit it to GitHub or paste it into a public issue.
 
-The initial seed credentials are fixed emails: `admin@teamsync.local` and `aarav@teamsync.local`. The two password environment variables are applied only when the seed is created for the first time. If the data file already exists, changing those values will not rotate passwords. To rotate them in a deployed app, implement a password-change/admin-reset flow or edit the hashed account through a deliberate administrative migration; do not delete a production data file.
+## 2. Deploy the app to Render for free
 
-## Other hosts
+1. Push the project to GitHub.
+2. In Render, choose **New → Blueprint** and connect the repository. Render reads `render.yaml` and creates the free Node web service.
+3. In the Blueprint environment-variable form, enter:
+   - `MONGODB_URI`: the private Atlas connection URI.
+   - `DEMO_ADMIN_PASSWORD`: a unique, strong password for the seeded admin account.
+   - `DEMO_EMPLOYEE_PASSWORD`: a different unique, strong password for the seeded employee account.
+4. Apply the Blueprint and wait for the deploy to finish. The build command is `npm install --omit=optional && npm run build`; the service starts with `npm start`.
+5. Open the service URL shown by Render, such as `https://team-sync-app.onrender.com`. The app and `/api` endpoints share that HTTPS origin.
+6. Verify `https://<service-name>.onrender.com/api/health` returns JSON with `"status":"ok"`, then sign in and try the workflows below.
 
-Any Node host can run this app if it supports a persistent writable volume. Use build command `npm ci && npm run build`, start command `npm start`, and the environment variables above. Configure SPA fallback to `index.html` only if the host serves static files separately; with `npm start`, the Node server already provides that fallback. Do not deploy the current JSON data store across multiple replicas.
+The first startup seeds demo accounts only when the MongoDB `employees` collection is empty. Seed emails are `admin@teamsync.local` and `aarav@teamsync.local`; their passwords are the values you supplied to Render. Changing these environment variables after seeding does not change existing password hashes. Use the app's password management flow or a deliberate administrative reset to rotate credentials; do not delete the production database to reset a password.
 
-A static-only host such as GitHub Pages or a basic static Vercel project cannot run the API process and cannot provide working authentication/chat. Those platforms require a separate API deployment and a durable database/session solution. For this project as currently implemented, choose one Node service with persistent storage.
+## Free hosting behavior and data
 
-## Local verification checklist
+Render Free web services can spin down after a period without traffic and take time to start again on the next request. They do not provide a persistent disk, so local files must not be used for production data. This deployment stores application data in Atlas; redeploying or restarting the web process does not erase the database. Free instances are intended for low-volume demos and can be suspended for unusually high outbound traffic. Review [Render's current free service details](https://render.com/docs/free) before relying on availability.
 
-Run `npm run lint` and `npm run build`. Then run `npm run api` and `npm run dev` in separate terminals. Confirm:
+The API currently keeps a cache of collection data in process memory and synchronizes writes to MongoDB. Run a single service instance; multiple API instances could overwrite stale cache snapshots. For a production multi-instance service, move reads/writes to direct MongoDB operations or add change-aware concurrency control before scaling horizontally.
 
-- Health endpoint responds successfully.
-- Valid admin login succeeds; bad password returns an error; inactive accounts are denied.
-- Registration rejects invalid email/short password and duplicate email, then lands in the dashboard.
-- Refreshing a signed-in browser restores the session; logout returns to sign-in.
-- Admin can list, filter, create, and update employees; employee accounts receive a 403 from admin-only routes.
-- Two active users can exchange direct messages; an unauthenticated request receives 401.
-- Admins can assign tasks to active employees; employees can update their own task status but cannot read or change another employee's assignments.
-- Profile changes persist through reloads; appearance preferences remain saved in the browser.
-- Production run (`npm run build && npm start`) serves the app and API from the same port.
+## Run locally
 
-## Interview preparation
+```sh
+npm install
+cp .env.example .env
+# Edit .env and set MONGODB_URI to your Atlas URI (or a local MongoDB URI).
+npm run build
+npm start
+```
 
-Be prepared to explain:
+Open `http://localhost:3001`. To run frontend hot reload during development, use two terminals: `npm run api` and `npm run dev`; Vite proxies `/api` to `http://localhost:3001`.
 
-- **Authentication:** password hashing uses scrypt with a random salt; the browser stores only an HTTP-only, same-site cookie; protected APIs derive identity from the server-side session mapping.
-- **Authorization:** frontend guards improve navigation, while the server enforces role checks on privileged employee routes.
-- **Chat:** each message records sender, receiver, timestamp, and monotonically increasing sequence; the client polls for new conversation messages. Explain the trade-off between simple polling and WebSockets.
-- **Persistence:** the JSON store avoids an external database for easy local setup, but is single-process and unsuitable for horizontal scale. Describe how normalized `users`, `sessions`, `conversations/messages` tables in PostgreSQL and a database-backed session store would replace it.
-- **Deployment:** one Node service serves the SPA and API, while persistent storage keeps data across restarts; secure cookies require HTTPS.
-- **Next steps:** add rate limits, password reset/email verification, audit logs, database migrations, message pagination, and automated integration tests.
+## Optional JSON-to-MongoDB import
 
-Avoid claiming OAuth, SSO, password recovery, group chat, or WebSocket delivery: those are not implemented in this repository.
+If you have a legacy `data/team-sync.json`, back it up first, configure `MONGODB_URI`, and run `npm run migrate:mongodb`. The importer refuses to write into a database whose target collections already contain records. Review the source data and destination before importing. Do not commit the JSON file or real employee data.
+
+## Authentication and feature verification
+
+Use separate browser profiles for the seeded admin and employee accounts. Check:
+
+- `/api/health` responds after deploy.
+- Valid login works; invalid passwords fail; inactive users are denied.
+- Refresh restores a signed-in session; logout removes it.
+- Employee-only registration validates email/password and rejects duplicate email.
+- Employees can see active coworkers, exchange direct messages, and see messages after polling/reload.
+- Admins can create/update employees, departments, tasks, attendance status, and documents; employees receive `403` on admin-only routes.
+- Employees can check in/out, see their tasks and attendance, and update their own task status.
+- Profile changes and all CRUD data survive a Render restart/redeploy.
+
+Run `npm run lint` and `npm run build` before pushing changes. For real production use, add automated API integration tests, rate limits, password reset/email verification, audit logging, backups, message pagination, and database-level access controls.
+
+## Project/interview notes
+
+- **Authentication:** passwords are stored as salted `scrypt` hashes. The browser receives only an HTTP-only, same-site session cookie; session mappings are stored in MongoDB.
+- **Authorization:** the API enforces role checks. Frontend route visibility is not treated as a security boundary.
+- **Chat:** direct messages include sender, receiver, timestamp, and sequence; clients poll for new messages rather than using WebSockets.
+- **Data model:** separate MongoDB collections store employees, messages, tasks, attendance, departments, documents, and sessions. The Node service currently loads these into a single-process cache and persists writes to MongoDB.
+- **Deployment:** Render hosts the Node service; MongoDB Atlas stores durable data. HTTPS enables secure session cookies.
+
+Do not claim OAuth/SSO, password recovery, group chat, or WebSocket delivery unless you implement those features separately.

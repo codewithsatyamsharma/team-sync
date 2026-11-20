@@ -10,18 +10,21 @@ Team Sync is a small employee workspace built with React, Vite, Redux Toolkit, R
 - Coworker directory and employee-to-employee direct messages. Messages are stored and refreshed by polling every 2.5 seconds.
 - Role-aware dashboard summaries, administrator task assignment, employee task status updates, and self-service profile edits.
 - Responsive chat layout, coworker search, message timestamps, server validation, and empty/loading/error states.
-- JSON-backed persistence so the sample app runs without a database service.
+- MongoDB persistence for employee accounts, sessions, chat, tasks, attendance, departments, and shared documents.
 
 ## Requirements
 
-- Node.js 20 or newer (Node 22 LTS recommended).
+- Node.js 20.19 or newer (Node 22 LTS recommended).
 - npm 10 or newer.
 
 ## Run locally
 
 ```bash
-npm ci
+npm install
+cp .env.example .env
 ```
+
+Create a free MongoDB Atlas cluster, a database user, and an IP access-list entry. Put the Atlas application connection URI in `.env` as `MONGODB_URI`; encode reserved characters in the database user's password for a URI. Never commit `.env`.
 
 Start the API and UI in separate terminals:
 
@@ -35,20 +38,20 @@ npm run dev
 
 Open the URL printed by Vite (usually `http://localhost:5173`). Vite proxies `/api` requests to `http://localhost:3001`.
 
-On first API launch, the server creates `data/team-sync.json` and seeds demo accounts. The default local credentials are:
+On first API launch with an empty MongoDB database, the server seeds demo accounts. If you leave the sample password values, local credentials are:
 
 | Role | Email | Password |
 | --- | --- | --- |
 | Admin | `admin@teamsync.local` | `password123` |
 | Employee | `aarav@teamsync.local` | `password123` |
 
-Set `DEMO_ADMIN_PASSWORD` and `DEMO_EMPLOYEE_PASSWORD` before the first API run to choose safer demo passwords. The inactive Maya sample account cannot sign in. Do not expose the default credentials on a public deployment.
+Set `DEMO_ADMIN_PASSWORD` and `DEMO_EMPLOYEE_PASSWORD` before the first API run to choose your own demo passwords. The inactive Maya sample account cannot sign in. Never use the sample passwords on a public deployment.
 
 For a production-style local run:
 
 ```bash
 npm run build
-DEMO_ADMIN_PASSWORD='choose-a-long-password' DEMO_EMPLOYEE_PASSWORD='choose-another-long-password' npm start
+NODE_ENV=production SERVE_STATIC=true npm start
 ```
 
 Then open `http://localhost:3001`. The same Node process serves the frontend build and `/api` on one origin.
@@ -58,14 +61,15 @@ Then open `http://localhost:3001`. The same Node process serves the frontend bui
 | Variable | Purpose | Default |
 | --- | --- | --- |
 | `PORT` | HTTP port | `3001` |
-| `DATA_FILE` | Persistent JSON database path | `./data/team-sync.json` |
+| `MONGODB_URI` | MongoDB Atlas application connection URI | Required |
+| `MONGODB_DB_NAME` | MongoDB database name | `team_sync` |
 | `DEMO_ADMIN_PASSWORD` | Initial demo admin password (only used when the initial seed has no hash) | `password123` |
 | `DEMO_EMPLOYEE_PASSWORD` | Initial demo employee password (same seed-only behavior) | `password123` |
 | `NODE_ENV` | Enables the `Secure` session cookie when set to `production` | unset |
 | `SERVE_STATIC` | Serve `dist/` alongside API when `true` | unset |
 | `APP_ORIGIN` | Exact allowed origin for credentialed cross-origin API use | unset |
 
-To reset the local demo, stop the server and remove `data/team-sync.json`; the next start will seed it again. This deletes local accounts and messages.
+To reset a demo database, stop the app and clear the app's MongoDB collections in a disposable development database. The next start seeds the demo accounts again. This permanently deletes the selected database's users, sessions, messages, tasks, attendance, departments, and documents.
 
 ## API overview
 
@@ -88,18 +92,19 @@ All API routes are rooted at `/api`.
 | `POST` | `/tasks` | Admin | Assign a task with `{ "title": "…", "assignedTo": "employee-id" }` |
 | `PATCH` | `/tasks/:id` | Admin or assignee | Update task status (`todo`, `in_progress`, `done`) |
 | `PATCH` | `/profile` | Signed in | Update the current user's name, bio, or avatar URL |
+| `GET`, `POST`, `PATCH`, `DELETE` | `/attendance`, `/departments`, `/documents` | Signed in/admin | Attendance and team resource CRUD, with role checks |
 
 ## Architecture notes
 
-The Vite client uses React Router for pages, Redux Toolkit for auth/theme state, and React Query for employee directory queries. `server/team-sync-api.js` contains the API and serves the Vite build when `SERVE_STATIC=true`. Passwords are hashed with Node's built-in scrypt and a per-password random salt. The session ID is an HTTP-only, same-site cookie; the server stores the session mapping in the JSON data file. Chat is direct employee-to-employee messaging, persisted in that same file, with client polling rather than a WebSocket connection.
+The Vite client uses React Router for pages, Redux Toolkit for auth/theme state, and React Query for employee directory queries. `server/team-sync-api.js` contains the API and serves the Vite build when `SERVE_STATIC=true`. The API uses the official MongoDB Node.js driver and stores data in separate `employees`, `sessions`, `messages`, `tasks`, `attendance`, `departments`, and `documents` collections. Passwords are hashed with Node's built-in scrypt and a per-password random salt. Session IDs are stored in MongoDB and sent in HTTP-only, same-site cookies. Chat is direct employee-to-employee messaging with client polling rather than WebSockets.
 
 ## Known production boundaries
 
-This is an interview/demo-ready project scaffold, not a hardened HR system. The JSON file store is suitable for a single server process and low traffic only. It has no concurrent multi-instance locking, database migrations, email verification, password reset, rate limiting, audit trail, attachment handling, message deletion, group chat, or WebSocket delivery. For a larger deployment, use PostgreSQL, durable managed sessions, rate limiting, backups, and a WebSocket or managed realtime service. Public self-registration creates employee-role accounts; do not treat it as a verified company identity flow.
+This is an interview/demo project, not a hardened HR system. The free Atlas tier is appropriate for development and low-throughput demos and has storage and performance limits. The in-memory cache in the current API is designed for a single app instance; do not scale the service horizontally without moving reads/writes to request-level database queries and adding concurrency controls. The app has no email verification, password reset, rate limiting, audit trail, attachment handling, message deletion, group chat, or WebSocket delivery. Public self-registration creates employee-role accounts; do not treat it as a verified company identity flow.
 
 ## Deploy
 
-See [DEPLOYMENT.md](./DEPLOYMENT.md) for a complete Render deployment guide, persistent storage setup, post-deploy checks, and interview talking points.
+See [DEPLOYMENT.md](./DEPLOYMENT.md) for a MongoDB Atlas + free Render setup, post-deploy checks, data migration instructions, and interview talking points.
 
 ## Project structure
 
@@ -112,5 +117,6 @@ src/
   features/admin module/employee directory and forms
   features/employee module/employee pages
 server/
-  team-sync-api.js     API, auth, chat, data persistence, production static server
+  team-sync-api.js     API, auth, chat, MongoDB persistence, production static server
+  migrate-json-to-mongodb.js  One-time import of legacy local JSON data
 ```
