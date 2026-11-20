@@ -11,15 +11,24 @@ import {
   verifyPassword as verify,
 } from "./lib/security.js";
 import { readJsonBody as body, sendJson as send } from "./lib/http.js";
-import { resolve, join } from "node:path";
+import { extname, resolve, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { MongoClient } from "mongodb";
-const getContentType = (path) => {
-  if (path.endsWith(".html")) return "text/html; charset=utf-8";
-  if (path.endsWith(".js")) return "text/javascript";
-  if (path.endsWith(".css")) return "text/css";
-  return "application/octet-stream";
-};
+const CONTENT_TYPES = new Map([
+  [".html", "text/html; charset=utf-8"],
+  [".js", "text/javascript; charset=utf-8"],
+  [".css", "text/css; charset=utf-8"],
+  [".svg", "image/svg+xml"],
+  [".png", "image/png"],
+  [".jpg", "image/jpeg"],
+  [".jpeg", "image/jpeg"],
+  [".webp", "image/webp"],
+  [".ico", "image/x-icon"],
+  [".woff2", "font/woff2"],
+]);
+
+const getContentType = (path) =>
+  CONTENT_TYPES.get(extname(path).toLowerCase()) || "application/octet-stream";
 const root = resolve(fileURLToPath(new URL("..", import.meta.url))),
   port = Number(process.env.PORT || 3001),
   isProduction = process.env.NODE_ENV === "production",
@@ -172,7 +181,7 @@ await save(...collectionNames);
  * HTTP API entry point. Route groups retain the existing client contract while
  * persistence, credentials, and HTTP primitives live in focused modules.
  */
-const api = createServer(async (req, res) => {
+const handleApiRequest = async (req, res) => {
   const origin = req.headers.origin;
   if (origin && process.env.APP_ORIGIN && origin === process.env.APP_ORIGIN) {
     res.setHeader("Access-Control-Allow-Origin", origin);
@@ -180,7 +189,7 @@ const api = createServer(async (req, res) => {
     res.setHeader("Access-Control-Allow-Credentials", "true");
   }
   res.setHeader("Access-Control-Allow-Headers", "Content-Type");
-  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,OPTIONS");
+  res.setHeader("Access-Control-Allow-Methods", "GET,POST,PATCH,DELETE,OPTIONS");
   if (req.method === "OPTIONS") {
     res.writeHead(204);
     return res.end();
@@ -754,35 +763,73 @@ const api = createServer(async (req, res) => {
       message: e instanceof SyntaxError ? "Invalid JSON request." : "Unexpected server error."
     });
   }
-});
+};
 if (process.env.SERVE_STATIC === "true") {
-  const {
-      readFile
-    } = await import("node:fs/promises"),
-    dist = resolve(root, "dist"),
-    web = createServer(async (req, res) => {
-      const path = resolve(dist, `.${decodeURIComponent(new URL(req.url, "http://localhost").pathname)}`);
-      if (path !== dist && !path.startsWith(`${dist}/`)) {
-        res.writeHead(403);
-        return res.end();
+  const { readFile } = await import("node:fs/promises");
+  const distDirectory = resolve(root, "dist");
+
+  const webServer = createServer(async (request, response) => {
+    const requestUrl = new URL(request.url, "http://localhost");
+    const requestPath = requestUrl.pathname;
+
+    // Keep the API and SPA on the same origin so session cookies work in production.
+    if (requestPath === "/api" || requestPath.startsWith("/api/")) {
+      return handleApiRequest(request, response);
+    }
+
+    let requestedPath;
+    try {
+      requestedPath = resolve(
+        distDirectory,
+        `.${decodeURIComponent(requestPath)}`,
+      );
+    } catch {
+      response.writeHead(400);
+      return response.end("Invalid URL.");
+    }
+
+    if (
+      requestedPath !== distDirectory &&
+      !requestedPath.startsWith(`${distDirectory}/`)
+    ) {
+      response.writeHead(403);
+      return response.end("Forbidden.");
+    }
+
+    try {
+      const file = await readFile(requestedPath);
+      response.writeHead(200, {
+        "Content-Type": getContentType(requestedPath),
+        "Cache-Control": requestedPath.endsWith("index.html")
+          ? "no-cache"
+          : "public, max-age=31536000, immutable",
+      });
+      return response.end(file);
+    } catch {
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        response.writeHead(404);
+        return response.end("Not found.");
       }
+
       try {
-        const file = await readFile(path);
-        res.writeHead(200, {
-          "Content-Type": getContentType(path)
+        response.writeHead(200, {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-cache",
         });
-        res.end(file);
+        return response.end(await readFile(join(distDirectory, "index.html")));
       } catch {
-        try {
-          res.writeHead(200, {
-            "Content-Type": "text/html; charset=utf-8"
-          });
-          res.end(await readFile(join(dist, "index.html")));
-        } catch {
-          res.writeHead(404);
-          res.end("Build not found. Run npm run build.");
-        }
+        response.writeHead(404);
+        return response.end("Build not found. Run npm run build.");
       }
-    });
-  web.listen(port, () => console.log(`Team Sync web app and API listening on port ${port}`));
-} else api.listen(port, () => console.log(`Team Sync API listening on http://localhost:${port}/api`));
+    }
+  });
+
+  webServer.listen(port, () => {
+    console.log(`Team Sync web app and API listening on port ${port}`);
+  });
+} else {
+  const apiServer = createServer(handleApiRequest);
+  apiServer.listen(port, () => {
+    console.log(`Team Sync API listening on http://localhost:${port}/api`);
+  });
+}
