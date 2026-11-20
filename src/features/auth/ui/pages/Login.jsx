@@ -3,7 +3,7 @@ import { Cloud, ArrowRightToLine } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 
 const Login = () => {
-  let { register, handleSubmit, onLoginSubmit, errors, navigate } = useAuth();
+  let { register, handleSubmit, onLoginSubmit, errors, error, isLoading, navigate } = useAuth();
 
   return (
     <div className="min-h-screen bg-[#09070F] relative overflow-hidden flex items-center justify-center px-4">
@@ -36,33 +36,7 @@ const Login = () => {
           </p>
         </div>
 
-        {/* Social Buttons */}
-        <div className="grid grid-cols-2 gap-4 mt-10">
-          <button
-            type="button"
-            className="h-14 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] transition flex items-center justify-center gap-3 text-white font-medium"
-          >
-            <Cloud size={18} />
-            GOOGLE
-          </button>
-
-          <button
-            type="button"
-            className="h-14 rounded-xl border border-white/10 bg-white/[0.03] hover:bg-white/[0.06] transition flex items-center justify-center gap-3 text-white font-medium"
-          >
-            {/* <Github size={18} /> */}
-            GITHUB
-          </button>
-        </div>
-
-        {/* Divider */}
-        <div className="flex items-center gap-4 my-8">
-          <div className="h-px flex-1 bg-white/10"></div>
-
-          <span className="text-gray-500 text-sm">or continue with email</span>
-
-          <div className="h-px flex-1 bg-white/10"></div>
-        </div>
+        <div className="my-8 text-center text-sm text-gray-500">Sign in with your work email</div>
 
         {/* Form */}
         <form onSubmit={handleSubmit(onLoginSubmit)} className="space-y-6">
@@ -97,12 +71,6 @@ const Login = () => {
                 Password
               </label>
 
-              <button
-                type="button"
-                className="text-sm text-purple-300 hover:text-purple-200"
-              >
-                Forgot password?
-              </button>
             </div>
 
             <input
@@ -133,11 +101,13 @@ const Login = () => {
           </div>
 
           {/* Button */}
+          {error && <p role="alert" className="text-sm text-red-400">{error}</p>}
           <button
             type="submit"
-            className="w-full h-14 rounded-xl bg-purple-600 hover:bg-purple-500 transition text-white font-semibold text-lg flex items-center justify-center gap-3"
+            disabled={isLoading}
+            className="w-full h-14 rounded-xl bg-purple-600 hover:bg-purple-500 transition text-white font-semibold text-lg flex items-center justify-center gap-3 disabled:opacity-60"
           >
-            Sign In
+            {isLoading ? "Signing in…" : "Sign In"}
             <ArrowRightToLine size={20} />
           </button>
         </form>

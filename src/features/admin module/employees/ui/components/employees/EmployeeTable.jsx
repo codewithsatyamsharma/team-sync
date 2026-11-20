@@ -1,7 +1,7 @@
 import EmployeeRow from "./EmployeeRow";
 
 
-const EmployeeTable = ({ employees = [] }) => {
+const EmployeeTable = ({ employees = [], onEdit, onInactive }) => {
   return (
     <div className="overflow-x-auto">
 
@@ -45,6 +45,8 @@ const EmployeeTable = ({ employees = [] }) => {
             <EmployeeRow
               key={employee._id}
               employee={employee}
+              onEdit={onEdit}
+              onInactive={onInactive}
             />
           ))}
 

@@ -27,8 +27,9 @@ const AsideNav = () => {
         {navigations.map((route) => {
           return (
             <NavigationTab
+              key={route.path}
               path={route.path}
-              Icon={route.icon}
+              icon={route.icon}
               title={route.title}
             />
           );

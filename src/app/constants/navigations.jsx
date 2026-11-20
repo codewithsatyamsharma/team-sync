@@ -41,6 +41,11 @@ export let employeeNavigation = [
     title: "Settings",
     icon: <Settings />,
   },
+  {
+    path: "/home/document",
+    title: "Documents",
+    icon: <File />,
+  },
 ];
 
 export let adminNavigation = [
@@ -53,6 +58,11 @@ export let adminNavigation = [
     path: "/home/task",
     title: "Task",
     icon: <List />,
+  },
+  {
+    path: "/home/attendance",
+    title: "Attendance",
+    icon: <Presentation />,
   },
   {
     path: "/home/chat",
@@ -69,10 +79,19 @@ export let adminNavigation = [
     title: "Employee",
     icon: <PersonStanding />,
   },
-  
+  {
+    path: "/home/document",
+    title: "Documents",
+    icon: <File />,
+  },
   {
     path: "/home/setting",
     title: "Settings",
     icon: <Settings />,
+  },
+  {
+    path: "/home/profile",
+    title: "Profile",
+    icon: <UserPen />,
   },
 ];

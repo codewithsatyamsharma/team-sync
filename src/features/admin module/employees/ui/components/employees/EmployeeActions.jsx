@@ -5,9 +5,9 @@
 
 import { useEffect, useRef, useState } from "react";
 
-import { MoreVertical, Pencil, Trash2, UserX } from "lucide-react";
+import { MoreVertical, Pencil, UserX } from "lucide-react";
 
-const EmployeeActions = ({ onEdit, onDelete, onInactive, employee }) => {
+const EmployeeActions = ({ onEdit, onInactive, employee }) => {
   const [open, setOpen] = useState(false);
 
   const dropdownRef = useRef();
@@ -76,17 +76,6 @@ const EmployeeActions = ({ onEdit, onDelete, onInactive, employee }) => {
             </button>
           )}
 
-          {/* DELETE */}
-          <button
-            onClick={() => {
-              onDelete?.();
-              setOpen(false);
-            }}
-            className="w-full h-12 px-4 rounded-xl flex items-center gap-3 hover:bg-red-50 transition-all text-red-500"
-          >
-            <Trash2 size={18} />
-            Delete Employee
-          </button>
         </div>
       )}
     </div>

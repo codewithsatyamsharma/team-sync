@@ -6,7 +6,7 @@ const RoleBaseRoute = ({ allowedRoles }) => {
   let { employee } = useSelector((store) => store.auth);
 
   if (!allowedRoles.includes(employee?.role)) {
-    return <Navigate to={"/unauthorized"} />;
+    return <Navigate to="/home" replace />;
   }
 
   return <Outlet />;

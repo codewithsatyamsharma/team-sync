@@ -1,36 +1,38 @@
-import { Bell, Lightbulb, Menu, Moon, Search } from "lucide-react";
+import { Lightbulb, LogOut, Moon } from "lucide-react";
 import React from "react";
 import { useDispatch, useSelector } from "react-redux";
 import { toggleTheme } from "../../../../shared/state/themeSlice";
+import { removeEmployee } from "../../../auth/state/auth/authSlice";
+import { axiosInstance } from "../../../../config/axiosInstance";
+import { useNavigate } from "react-router";
 
 const TopNav = () => {
   let dispatch = useDispatch();
+  const navigate = useNavigate();
 
   let { mode } = useSelector((store) => store.theme);
+  let { employee } = useSelector((store) => store.auth);
 
   let handleThemeChange = () => {
     dispatch(toggleTheme());
   };
 
+  const handleLogout = async () => {
+    try { await axiosInstance.post("/auth/logout"); }
+    finally { dispatch(removeEmployee()); navigate("/"); }
+  };
+
   return (
-    <div className="flex justify-between bg-[--bg-card] items-center">
-      <div className="flex gap-4 items-center w-[30%] rounded px-3 py-2 bg-[var(--bg-surface)] border border-gray-600">
-        <Search size={23} />
-        <input
-          className="outline-0 w-full text-[var(--text-primary)]"
-          type="text"
-          placeholder="Search workspace.."
-        />
-      </div>
-      <div className="flex gap-4">
+    <div className="flex items-center justify-between rounded-xl bg-[var(--bg-card)] px-4 py-3 text-[var(--text-primary)]">
+      <div><p className="font-medium">Team Sync</p><p className="text-xs text-[var(--text-muted)]">{employee?.email}</p></div>
+      <div className="flex items-center gap-4">
         {mode === "light" ? (
-          <Moon onClick={handleThemeChange} size={23} />
+          <button type="button" onClick={handleThemeChange} aria-label="Switch to dark theme" title="Switch to dark theme"><Moon size={20} /></button>
         ) : (
-          <Lightbulb onClick={handleThemeChange} size={23} />
+          <button type="button" onClick={handleThemeChange} aria-label="Switch to light theme" title="Switch to light theme"><Lightbulb size={20} /></button>
         )}
 
-        <Bell size={23} />
-        <Menu size={23} />
+        <button type="button" onClick={handleLogout} className="flex items-center gap-2 text-sm" aria-label="Sign out"><LogOut size={19} /><span className="hidden sm:inline">Sign out</span></button>
       </div>
     </div>
   );

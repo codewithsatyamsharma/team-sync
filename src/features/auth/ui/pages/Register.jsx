@@ -1,10 +1,9 @@
 import React from "react";
-import { useForm } from "react-hook-form";
 import { User, Mail, Lock, Sparkles, ShieldCheck } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
 
 const Register = () => {
-  let { register, handleSubmit, onRegisterSubmit, errors, navigate } =
+  let { register, handleSubmit, onRegisterSubmit, errors, error, isLoading, navigate } =
     useAuth();
 
   return (
@@ -144,8 +143,8 @@ const Register = () => {
                     {...register("password", {
                       required: "Password is required",
                       minLength: {
-                        value: 6,
-                        message: "Password must be at least 6 characters",
+                        value: 10,
+                        message: "Password must be at least 10 characters",
                       },
                     })}
                   />
@@ -174,7 +173,7 @@ const Register = () => {
                   type="checkbox"
                   className="mt-1 w-5 h-5 rounded border border-white/20 bg-transparent accent-purple-500"
                   {...register("terms", {
-                    required: true,
+                    required: "You must accept the terms to create an account.",
                   })}
                 />
 
@@ -192,11 +191,14 @@ const Register = () => {
               </div>
 
               {/* Submit */}
+              {errors.terms && <p role="alert" className="text-red-400 text-sm">{errors.terms.message}</p>}
+              {error && <p role="alert" className="text-red-400 text-sm">{error}</p>}
               <button
                 type="submit"
-                className="w-full h-16 rounded-xl bg-gradient-to-r from-purple-600 to-purple-300 text-black font-semibold text-lg hover:opacity-90 transition"
+                disabled={isLoading}
+                className="w-full h-16 rounded-xl bg-gradient-to-r from-purple-600 to-purple-300 text-black font-semibold text-lg hover:opacity-90 transition disabled:opacity-60"
               >
-                Create Account
+                {isLoading ? "Creating account…" : "Create Account"}
               </button>
 
               {/* Divider */}

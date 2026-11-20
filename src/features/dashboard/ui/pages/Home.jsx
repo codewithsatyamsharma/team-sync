@@ -1,278 +1,32 @@
-import {
-    Activity,
-    CheckCircle2,
-    ClipboardList,
-    LoaderCircle,
-} from "lucide-react";
-
-import { useDashboard } from "../../hooks/useDashboard.jsx";
-
-import StatCard from "../components/StatCard.jsx";
-import TaskProgress from "../components/TaskProgress.jsx";
-import ActivityTimeline from "../components/ActivityTimeline.jsx";
-import ActiveTeamMembers from "../components/ActiveTeamMembers.jsx";
-import AISuggestion from "../components/AISuggestion.jsx";
-
-
-const Home = () => {
-
-    const {
-        data,
-        loading,
-        error,
-        refetch,
-    } = useDashboard();
-
-
-    if (loading) {
-
-        return (
-            <div
-                className="
-                    flex
-                    min-h-[500px]
-                    items-center
-                    justify-center
-                "
-            >
-
-                <LoaderCircle
-                    size={32}
-                    className="
-                        animate-spin
-                        text-[var(--primary)]
-                    "
-                />
-
-            </div>
-        );
-
-    }
-
-
-    if (error) {
-
-        return (
-            <div
-                className="
-                    flex
-                    min-h-[500px]
-                    flex-col
-                    items-center
-                    justify-center
-                    gap-4
-                "
-            >
-
-                <p
-                    className="
-                        text-sm
-                        text-[var(--danger)]
-                    "
-                >
-                    Failed to load dashboard.
-                </p>
-
-
-                <button
-                    onClick={refetch}
-                    className="
-                        rounded-lg
-                        bg-[var(--primary)]
-                        px-4
-                        py-2
-                        text-sm
-                        font-semibold
-                        text-white
-                    "
-                >
-                    Try Again
-                </button>
-
-            </div>
-        );
-
-    }
-
-
-    if (!data) {
-        return null;
-    }
-
-
-    const {
-        user,
-        stats,
-        chart,
-        activities,
-        team,
-        suggestion,
-    } = data;
-
-
-    return (
-        <main
-            className="
-                w-full
-                min-w-0
-                px-6
-                py-6
-                lg:px-8
-                xl:px-10
-            "
-        >
-
-            {/* ================================= */}
-            {/* HEADER */}
-            {/* ================================= */}
-
-            <div className="mb-8">
-
-                <h1
-                    className="
-                        text-2xl
-                        font-bold
-                        tracking-tight
-                        text-[var(--text-primary)]
-                        md:text-3xl
-                    "
-                >
-                    Good morning,{" "}
-                    {user?.name || "User"} 👋
-                </h1>
-
-
-                <p
-                    className="
-                        mt-1
-                        text-sm
-                        text-[var(--text-secondary)]
-                    "
-                >
-                    Here's what's happening in Synthetix AI today.
-                </p>
-
-            </div>
-
-
-            {/* ================================= */}
-            {/* STATS */}
-            {/* ================================= */}
-
-            <div
-                className="
-                    grid
-                    grid-cols-1
-                    gap-5
-                    sm:grid-cols-2
-                    xl:grid-cols-4
-                "
-            >
-
-                <StatCard
-                    type="totalTasks"
-                    title="Total Tasks"
-                    value={
-                        stats?.totalTasks?.value ?? 0
-                    }
-                    change={
-                        stats?.totalTasks?.change
-                    }
-                />
-
-
-                <StatCard
-                    type="completedTasks"
-                    title="Completed Tasks"
-                    value={
-                        stats?.completedTasks?.value ?? 0
-                    }
-                    change={
-                        stats?.completedTasks?.change
-                    }
-                />
-
-
-                <StatCard
-                    type="activeProjects"
-                    title="Active Projects"
-                    value={
-                        stats?.activeProjects?.value ?? 0
-                    }
-                    extra="Active"
-                />
-
-
-                <StatCard
-                    type="teamMembers"
-                    title="Team Members"
-                    value={
-                        stats?.teamMembers?.value ?? 0
-                    }
-                    extra={
-                        stats?.teamMembers?.newThisMonth
-                            ? `New ${stats.teamMembers.newThisMonth}`
-                            : undefined
-                    }
-                />
-
-            </div>
-
-
-            {/* ================================= */}
-            {/* MAIN CONTENT */}
-            {/* ================================= */}
-
-            <div
-                className="
-                    mt-6
-                    grid
-                    grid-cols-1
-                    gap-6
-                    xl:grid-cols-[minmax(0,2fr)_minmax(320px,1fr)]
-                "
-            >
-
-                {/* LEFT */}
-
-                <div className="min-w-0">
-
-                    <TaskProgress
-                        chart={chart}
-                    />
-
-
-                    <div className="mt-6">
-
-                        <ActiveTeamMembers
-                            team={team}
-                        />
-
-                    </div>
-
-                </div>
-
-
-                {/* RIGHT */}
-
-                <div className="min-w-0 space-y-6">
-
-                    <ActivityTimeline
-                        activities={activities}
-                    />
-
-
-                    <AISuggestion
-                        suggestion={suggestion}
-                    />
-
-                </div>
-
-            </div>
-
-        </main>
-    );
-};
-
-
-export default Home;
+import { createElement, useEffect, useState } from "react";
+import { ArrowRight, CheckCircle2, ClipboardList, MessageCircle, Users } from "lucide-react";
+import { Link } from "react-router";
+import { useSelector } from "react-redux";
+import { axiosInstance } from "../../../../config/axiosInstance";
+
+const card = "rounded-2xl border border-white/10 bg-[var(--bg-surface)] p-5";
+export default function Home() {
+  const { employee } = useSelector((state) => state.auth);
+  const [tasks, setTasks] = useState([]);
+  const [people, setPeople] = useState([]);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    Promise.all([axiosInstance.get("/tasks"), axiosInstance.get("/chat/people")])
+      .then(([taskResponse, peopleResponse]) => { setTasks(taskResponse.data.data); setPeople(peopleResponse.data.data); })
+      .catch((e) => setError(e.response?.data?.message || "Could not load your workspace summary."));
+  }, []);
+  const completed = tasks.filter((task) => task.status === "done").length;
+  const open = tasks.length - completed;
+  return <main className="space-y-6 text-[var(--text-primary)]">
+    <header className="rounded-2xl bg-gradient-to-r from-violet-700 to-indigo-600 p-7 text-white"><p className="text-sm text-white/75">Your workspace</p><h1 className="mt-1 text-3xl font-bold">Welcome back, {employee?.name?.split(" ")[0] || "there"}</h1><p className="mt-2 text-white/80">Here is what is happening with your team today.</p></header>
+    {error && <p role="alert" className="rounded-xl bg-red-500/10 p-4 text-red-300">{error}</p>}
+    <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+      {[[ClipboardList,"All tasks",tasks.length],[CheckCircle2,"Completed",completed],[Users,"Active coworkers",people.length],[MessageCircle,"Open tasks",open]].map(([Icon,title,value])=><article className={card} key={title}><div className="flex items-center justify-between text-sm text-[var(--text-secondary)]"><span>{title}</span>{createElement(Icon,{size:19})}</div><p className="mt-4 text-3xl font-bold">{value}</p></article>)}
+    </section>
+    <section className="grid gap-6 lg:grid-cols-[1.4fr_1fr]">
+      <article className={card}><div className="mb-4 flex items-center justify-between"><h2 className="text-lg font-semibold">Recent tasks</h2><Link className="flex items-center gap-1 text-sm text-purple-300" to={employee?.role === "admin" ? "/home/task" : "/home/myTask"}>View tasks <ArrowRight size={15}/></Link></div>
+        {tasks.length===0?<p className="py-8 text-center text-sm text-[var(--text-muted)]">No tasks yet. {employee?.role==="admin"?"Create a task and assign it to a coworker.":"Your manager can assign work to you."}</p>:tasks.slice(0,5).map((task)=><div key={task.id} className="flex items-center justify-between border-t border-white/10 py-3"><div><p className="font-medium">{task.title}</p><p className="text-xs text-[var(--text-muted)]">{employee?.role==="admin"?`Assigned to ${task.assignee}`:task.dueDate?`Due ${task.dueDate}`:"Assigned to you"}</p></div><span className="rounded-full bg-white/10 px-3 py-1 text-xs capitalize">{task.status.replace("_"," ")}</span></div>)}</article>
+      <article className={card}><h2 className="mb-4 text-lg font-semibold">Quick links</h2><div className="grid gap-3"><Link to="/home/chat" className="flex items-center gap-3 rounded-xl border border-white/10 p-4 hover:bg-white/5"><MessageCircle size={19} className="text-purple-300"/><span><b className="block">Team chat</b><small className="text-[var(--text-muted)]">Talk with active coworkers</small></span><ArrowRight className="ml-auto" size={17}/></Link><Link to={employee?.role==="admin"?"/home/task":"/home/myTask"} className="flex items-center gap-3 rounded-xl border border-white/10 p-4 hover:bg-white/5"><ClipboardList size={19} className="text-purple-300"/><span><b className="block">{employee?.role==="admin"?"Manage tasks":"My tasks"}</b><small className="text-[var(--text-muted)]">{open} items need attention</small></span><ArrowRight className="ml-auto" size={17}/></Link><Link to={employee?.role==="admin"?"/home/employee":"/home/profile"} className="flex items-center gap-3 rounded-xl border border-white/10 p-4 hover:bg-white/5"><Users size={19} className="text-purple-300"/><span><b className="block">{employee?.role==="admin"?"Employee directory":"My profile"}</b><small className="text-[var(--text-muted)]">View workspace details</small></span><ArrowRight className="ml-auto" size={17}/></Link></div></article>
+    </section>
+  </main>;
+}

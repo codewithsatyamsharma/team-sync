@@ -1,9 +1,6 @@
 import { BriefcaseBusiness } from "lucide-react";
 
-const EmploymentDetailsForm = ({
-  register,
-  errors,
-}) => {
+const EmploymentDetailsForm = ({ register }) => {
   return (
     <div className="bg-[var(--bg-surface)] border border-[var(--border-color)] rounded-3xl p-8 mt-8">
 
@@ -99,6 +96,11 @@ const EmploymentDetailsForm = ({
             className="w-full h-16 rounded-2xl border border-[var(--border-color)] bg-[var(--bg-main)] px-5 outline-none"
           />
 
+        </div>
+
+        <div>
+          <label className="mb-3 block text-sm font-semibold text-[var(--text-secondary)]">Temporary password (10+ characters)</label>
+          <input type="password" minLength={10} {...register("password", { required: "A temporary password is required", minLength: { value: 10, message: "Use at least 10 characters" } })} className="h-16 w-full rounded-2xl border border-[var(--border-color)] bg-[var(--bg-main)] px-5 outline-none" />
         </div>
 
         {/* STATUS */}

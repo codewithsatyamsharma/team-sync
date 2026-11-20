@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: team-sync-app
+    runtime: node
+    plan: starter
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    disk:
+      name: team-sync-data
+      mountPath: /var/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: SERVE_STATIC
+        value: "true"
+      - key: DATA_FILE
+        value: /var/data/team-sync.json
+      - key: DEMO_ADMIN_PASSWORD
+        sync: false
+      - key: DEMO_EMPLOYEE_PASSWORD
+        sync: false

@@ -1,8 +1,7 @@
-import { updateEmployee } from "../../../api/employeeApis";
 import EmployeeActions from "./EmployeeActions";
 import StatusBadge from "./StatusBadge";
 
-const EmployeeRow = ({ employee }) => {
+const EmployeeRow = ({ employee, onEdit, onInactive }) => {
   return (
     <tr className="border-b border-[var(--border-color)]">
       {/* PROFILE */}
@@ -53,16 +52,8 @@ const EmployeeRow = ({ employee }) => {
       <td className="px-6">
         <EmployeeActions
           employee={employee}
-          onEdit={() => console.log("Edit", employee)}
-          onDelete={() => console.log("Delete", employee)}
-          onInactive={async () => {
-            if (
-              employee.status === "inactive"
-                ? await updateEmployee(employee?._id, { status: "active" })
-                : await updateEmployee(employee?._id, { status: "inactive" })
-            )
-              alert("employee status updated");
-          }}
+          onEdit={() => onEdit(employee)}
+          onInactive={() => onInactive(employee, employee.status === "inactive" ? "active" : "inactive")}
         />
       </td>
     </tr>
